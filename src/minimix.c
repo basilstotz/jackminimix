@@ -35,15 +35,25 @@
 
 
 #define		DEFAULT_CLIENT_NAME		"minimixer"		// Default name of JACK client
-#define		DEFAULT_CHANNEL_COUNT	(4)				// Default number of input channels
+#define		DEFAULT_CHANNEL_COUNT	(8)				// Default number of input channels
 #define		CHANNEL_LABEL_LEN		(12)			// Max length of channel label strings
 #define		GAIN_FADE_RATE			(400.0f)	// Rate to fade at (dB per second)
 
+#define         false 0
+#define         true 1
 
 typedef struct {
 	char label[CHANNEL_LABEL_LEN];	// Label for Channel
 	float current_gain;				// decibels
 	float desired_gain;				// decibels
+  
+        float current_pan;
+        float desired_pan;    //fix value!!
+        int mono;
+        int mute;
+        int not_solo;
+        jack_port_t *mono_port;                  // Mono Input Port
+  
 	jack_port_t *left_port;			// Left Input Port
 	jack_port_t *right_port;		// Right Input Port
 } jmm_channel_t;
@@ -51,7 +61,9 @@ typedef struct {
 
 jack_port_t *outport[2] = {NULL, NULL};
 jack_client_t *client = NULL;
- 
+
+int mono = false;
+
 unsigned int verbose = 0;
 unsigned int quiet = 0;
 unsigned int running = 1;
@@ -105,6 +117,176 @@ int wildcard_handler(const char *path, const char *types, lo_arg **argv, int arg
 
     return -1;
 }
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+static
+int set_solo_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	int solo = argv[1]->i;
+	int result;
+	int i;
+	
+	if (verbose) {
+    	printf("Received channel solo change OSC message ");
+		printf(" (channel=%d, solo=%i)\n", chan, solo);
+	}
+	
+	// Make sure solo is in range
+	if (solo<0) solo = 0;
+	if (solo>1) solo = 1;
+	
+	// Make sure channel number is in range
+	if (chan < 1 || chan > channel_count) {
+		fprintf(stderr,"Warning: channel number in OSC message is out of range.\n");
+		return 0;
+	}
+	
+	// store the new value
+	if(solo==1){
+             for(i=0;i<channel_count;i++)channels[i].not_solo = true;
+	     channels[chan-1].not_solo = false;
+	}else{
+	     for(i=0;i<channel_count;i++)channels[i].not_solo = false;
+	}
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/solo", "ii", chan, channels[chan-1].not_solo );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+
+static
+int get_solo_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	int result;
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/solo", "ii", chan, channels[chan-1].not_solo );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+/////////////////////////////////////////
+
+static
+int set_mute_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	int mute = argv[1]->i;
+	int result;
+
+	if (verbose) {
+    	printf("Received channel mute change OSC message ");
+		printf(" (channel=%d, mute=%i)\n", chan, mute);
+	}
+	
+	// Make sure mute is in range
+	if (mute<0) mute = 0;
+	if (mute>1) mute = 1;
+	
+	// Make sure channel number is in range
+	if (chan < 1 || chan > channel_count) {
+		fprintf(stderr,"Warning: channel number in OSC message is out of range.\n");
+		return 0;
+	}
+	
+	// store the new value
+	channels[chan-1].mute = mute;
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/mute", "ii", chan, channels[chan-1].mute );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+
+static
+int get_mute_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	int result;
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/mute", "ii", chan, channels[chan-1].mute );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+///////////////////////////////
+
+static
+int set_pan_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	float pan = argv[1]->f;
+	int result;
+
+	if (verbose) {
+    	printf("Received channel pan change OSC message ");
+		printf(" (channel=%d, pan=%f)\n", chan, pan);
+	}
+	
+	// Make sure pan is in range
+	if (pan<-1.0) pan = -1.0;
+	if (pan>1.0) pan = 1.0;
+	
+	// Make sure channel number is in range
+	if (chan < 1 || chan > channel_count) {
+		fprintf(stderr,"Warning: channel number in OSC message is out of range.\n");
+		return 0;
+	}
+	
+	// store the new value
+	channels[chan-1].desired_pan = pan;
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/pan", "if", chan, channels[chan-1].desired_pan );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+static
+int get_pan_handler(const char *path, const char *types, lo_arg **argv, int argc,
+		 lo_message msg, void *user_data)
+{
+	lo_address src = lo_message_get_source( msg );
+	lo_server serv = (lo_server)user_data;
+	int chan = argv[0]->i;
+	int result;
+
+	// Send back reply
+	result = lo_send_from( src, serv, LO_TT_IMMEDIATE, "/mixer/channel/pan", "if", chan, channels[chan-1].desired_pan );
+	if (result<1) fprintf(stderr, "Error: sending reply failed: %s\n", lo_address_errstr(src));
+
+	return 0;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////
 
 static
 int set_gain_handler(const char *path, const char *types, lo_arg **argv, int argc,
@@ -235,12 +417,12 @@ void shutdown_callback_jack(void *arg)
 static
 int process_jack_audio(jack_nframes_t nframes, void *arg)
 {
-	jack_default_audio_sample_t *out_left =
+ 
+        jack_default_audio_sample_t *out_left =
 		jack_port_get_buffer(outport[0], nframes);
 	jack_default_audio_sample_t *out_right =
 		jack_port_get_buffer(outport[1], nframes);
 	jack_nframes_t n=0;
-	int ch;
 	
 	// Put silence into the outputs
 	for ( n=0; n<nframes; n++ ) {
@@ -249,34 +431,80 @@ int process_jack_audio(jack_nframes_t nframes, void *arg)
 	}
 
 	// Mix each input into the output buffer
-	for ( ch=0; ch < channel_count ; ch++ ) {
+	for ( int ch=0; ch < channel_count ; ch++ ) {
 		float mix_gain;
-		jack_default_audio_sample_t *in_left =
-			jack_port_get_buffer(channels[ch].left_port, nframes);
-		jack_default_audio_sample_t *in_right =
-			jack_port_get_buffer(channels[ch].right_port, nframes);
+		float pan_left;
+		float pan_right;
+		float left;
+		float right;
+		int active = (channels[ch].mute == false) || (channels[ch].not_solo == false);
+		
+ 	        //jmm_channel_t *channel = channels[ch];
+
+		
+		jack_default_audio_sample_t *in_mono;
+		jack_default_audio_sample_t *in_left;
+		jack_default_audio_sample_t *in_right;
+	       
+		if(channels[ch].mono==true){
+		   in_mono = jack_port_get_buffer(channels[ch].mono_port, nframes);
+		}else{
+		   in_left = jack_port_get_buffer(channels[ch].left_port, nframes);
+		   in_right = jack_port_get_buffer(channels[ch].right_port, nframes);
+		}
 		
 		// Adjust the current gain towards desired gain ?
-		if (channels[ch].current_gain != channels[ch].desired_gain) {
+		if(active==true){
+		      if (channels[ch].current_gain != channels[ch].desired_gain) {
+			      float fade_step = (GAIN_FADE_RATE / jack_get_sample_rate( client )) * nframes;
+			      if (channels[ch].current_gain < channels[ch].desired_gain-fade_step) {
+				      channels[ch].current_gain += fade_step;
+			      } else if (channels[ch].current_gain > channels[ch].desired_gain+fade_step) {
+				      channels[ch].current_gain -= fade_step;
+			      } else {
+				      channels[ch].current_gain = channels[ch].desired_gain;
+			      }
+		      }
+		}else{
+		  channels[ch].current_gain= -90.0;
+		}
+		
+		// Adjust the current pan towards desired pan ?
+		if (channels[ch].current_pan != channels[ch].desired_pan) {
 			float fade_step = (GAIN_FADE_RATE / jack_get_sample_rate( client )) * nframes;
-			if (channels[ch].current_gain < channels[ch].desired_gain-fade_step) {
-				channels[ch].current_gain += fade_step;
-			} else if (channels[ch].current_gain > channels[ch].desired_gain+fade_step) {
-				channels[ch].current_gain -= fade_step;
+			if (channels[ch].current_pan < channels[ch].desired_pan-fade_step) {
+				channels[ch].current_pan += fade_step;
+			} else if (channels[ch].current_pan > channels[ch].desired_pan+fade_step) {
+				channels[ch].current_pan -= fade_step;
 			} else {
-				channels[ch].current_gain = channels[ch].desired_gain;
+				channels[ch].current_pan = channels[ch].desired_pan;
 			}
 		}
 		
 		// Mix the audio
 		mix_gain = db2lin( channels[ch].current_gain );
-		for ( n=0; n<nframes; n++ ) {
-			out_left[ n ] += (in_left[ n ] * mix_gain);
-			out_right[ n ] += (in_right[ n ] * mix_gain);
-		}
-		
-	}
+		pan_left = (channels[ch].current_pan / 2.0) + 0.5;
+		pan_right = 1.0 - pan_left;
 
+		//speed up
+		left = mix_gain * pan_left;
+		right = mix_gain * pan_right;
+
+		if(active==true){
+		     // here the work is done
+		       if(channels[ch].mono == true){
+		          for ( n=0; n<nframes; n++ ) {
+			     out_left[ n ] += (in_mono[ n ] * left);
+			     out_right[ n ] += (in_mono[ n ] *right );
+			  }
+		       }else{
+			   for ( n=0; n<nframes; n++ ) {
+			     out_left[ n ] += (in_left[ n ] * left);
+			     out_right[ n ] += (in_right[ n ] * right);
+			   }
+		       }
+		}
+	}
 	return 0;
 }
 
@@ -294,15 +522,30 @@ lo_server_thread init_osc( const char * port )
 	
 	// Add the methods
 	serv = lo_server_thread_get_server( st );
-    lo_server_thread_add_method(st, "/mixer/get_channel_count", "", get_channel_count_handler, serv);
-    lo_server_thread_add_method(st, "/mixer/channel/set_gain", "if", set_gain_handler, serv);
-    lo_server_thread_add_method(st, "/mixer/channel/get_gain", "i", get_gain_handler, serv);
-    lo_server_thread_add_method(st, "/mixer/channel/get_label", "i", get_label_handler, serv);
-    lo_server_thread_add_method(st, "/mixer/channel/set_label", "is", set_label_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/get_channel_count", "", get_channel_count_handler, serv);
+
+	lo_server_thread_add_method(st, "/mixer/channel/set_gain", "if", set_gain_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/channel/get_gain", "i", get_gain_handler, serv);
+
+	// add pan handlers
+	lo_server_thread_add_method(st, "/mixer/channel/set_pan", "if", set_pan_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/channel/get_pan", "i", get_pan_handler, serv);
+
+	// add mute handlers
+	lo_server_thread_add_method(st, "/mixer/channel/set_mute", "ii", set_mute_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/channel/get_mute", "i", get_mute_handler, serv);
+
+	// add solo handlers
+	lo_server_thread_add_method(st, "/mixer/channel/set_solo", "ii", set_solo_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/channel/get_solo", "i", get_solo_handler, serv);
+
+	lo_server_thread_add_method(st, "/mixer/channel/set_label", "is", set_label_handler, serv);
+	lo_server_thread_add_method(st, "/mixer/channel/get_label", "i", get_label_handler, serv);
+
 	lo_server_thread_add_method( st, "/ping", "", ping_handler, serv);
 
-    // add method that will match any path and args
-    lo_server_thread_add_method(st, NULL, NULL, wildcard_handler, serv);
+	// add method that will match any path and args
+	lo_server_thread_add_method(st, NULL, NULL, wildcard_handler, serv);
 
 	// Start the thread
 	lo_server_thread_start(st);
@@ -338,21 +581,17 @@ void init_jack( const char * client_name )
 		exit(1);
 	}
 	if (!quiet) printf("JACK client registered as '%s'.\n", jack_get_client_name( client ) );
-
 	// Create our pair of output ports
 	if (!(outport[0] = jack_port_register(client, "out_left", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0))) {
 		fprintf(stderr, "Cannot register output port 'out_left'.\n");
 		exit(1);
 	}
-	
 	if (!(outport[1] = jack_port_register(client, "out_right", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0))) {
 		fprintf(stderr, "Cannot register output port 'out_right'.\n");
 		exit(1);
 	}
-	
 	// Register shutdown callback
 	jack_on_shutdown (client, shutdown_callback_jack, NULL );
-
 	// Register the peak audio callback
 	jack_set_process_callback(client, process_jack_audio, 0);
 
@@ -436,7 +675,6 @@ jmm_channel_t* init_channels( int chan_count )
 	
 	// Initialise each of the channels
 	for(c=0; c<chan_count; c++) {
-	
 		snprintf( channels[c].label, CHANNEL_LABEL_LEN, "Channel %d", c+1 );
 		
 		if (c==0) {
@@ -448,12 +686,26 @@ jmm_channel_t* init_channels( int chan_count )
 			channels[c].current_gain=-90.0f;
 			channels[c].desired_gain=-90.0f;
 		}
+
+		// Pan starts with center
+		channels[c].current_pan = 0.0f;
+		channels[c].desired_pan = 0.0f;
+
+		// Mute and not_solo
+		channels[c].mute = false;
+		channels[c].not_solo = false;
 		
 		// Create the JACK input ports
-		channels[c].left_port = create_input_port( "left", c );
-		channels[c].right_port = create_input_port( "right", c );
-	}
-			
+		int stereo = chan_count / 6;
+		if(c<chan_count-stereo){
+		  channels[c].mono_port = create_input_port( "mono", c );
+		  channels[c].mono = true;
+		}else{
+		  channels[c].left_port = create_input_port( "left", c );
+		  channels[c].right_port = create_input_port( "right", c );
+		  channels[c].mono = false;
+		}
+	}	
 	return channels;
 }
 
@@ -472,7 +724,7 @@ int usage( )
 	printf("   -a            Automatically connect our output JACK ports\n");
 	printf("   -l <port>     Connect left output to this input port\n");
 	printf("   -r <port>     Connect right output to this input port\n");
-	printf("   -c <count>    Number of input channels (default 4)\n");
+	printf("   -c <count>    Number of input channels (default 8)\n");
 	printf("   -p <port>     Set the UDP port number for OSC\n");
 	printf("   -n <name>     Name for this JACK client (default minimix)\n");
 	printf("   -v            Enable verbose mode\n");
@@ -513,10 +765,11 @@ int main(int argc, char *argv[])
 	}
     argc -= optind;
     argv += optind;
-	
+
+
 	// Check parameters
 	if (channel_count<1) usage();
-		
+
 	// Validate parameters
 	if (quiet && verbose) {
     	fprintf(stderr, "Can't be quiet and verbose at the same time.\n");
@@ -526,18 +779,16 @@ int main(int argc, char *argv[])
 	// Dislay welcoming message
 	if (verbose) printf("Starting JackMiniMix version %s with %d channels.\n",
 							VERSION, channel_count);
-
 	// Set signal handlers
 	signal(SIGTERM, signal_handler);
 	signal(SIGINT, signal_handler);
-
 
 	// Setup JACK
 	init_jack( client_name );
 
 	// Create the channel descriptors
 	channels = init_channels( channel_count );
-	
+
 	// Label the channels
 	for(i=0; i<argc && i<channel_count; i++) {
 		strncpy( channels[i].label, argv[i], CHANNEL_LABEL_LEN );
@@ -554,17 +805,14 @@ int main(int argc, char *argv[])
 	if (connect_left) connect_jack_port( outport[0], connect_left );
 	if (connect_right) connect_jack_port( outport[1], connect_right );
 
-
 	// Setup OSC
 	server_thread = init_osc( osc_port );
-
 
 	// Sleep until we are done (work is done in threads)
 	while (running) {
 		usleep(1000);
 	}
-	
-	
+		
 	// Cleanup
 	finish_osc( server_thread );
 	finish_jack( client );
@@ -572,4 +820,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
