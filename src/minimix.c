@@ -151,7 +151,9 @@ int set_solo_handler(const char *path, const char *types, lo_arg **argv, int arg
              for(i=0;i<channel_count;i++)channels[i].not_solo = true;
 	     channels[chan-1].not_solo = false;
 	}else{
+	  if(channels[chan-1].not_solo ==  false ){
 	     for(i=0;i<channel_count;i++)channels[i].not_solo = false;
+	  }
 	}
 
 	// Send back reply
